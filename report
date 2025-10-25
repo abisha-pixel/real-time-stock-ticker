@@ -1,1 +1,185 @@
-text
+#backend/server
+const express = require('express');
+app.use(cors());
+app.use(express.json());
+
+
+setupRoutes(app);
+
+
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+
+// Simple in-memory ticker state
+const tickers = {
+AAPL: 170.23,
+MSFT: 348.12,
+GOOGL: 134.55,
+TSLA: 240.88
+};
+
+
+// Broadcast helper
+function broadcast(data) {
+const payload = JSON.stringify(data);
+wss.clients.forEach(client => {
+if (client.readyState === WebSocket.OPEN) client.send(payload);
+});
+}
+
+
+// Mock generator: alters prices every second and broadcasts
+setInterval(() => {
+const updates = [];
+Object.keys(tickers).forEach(sym => {
+// random walk
+const change = (Math.random() - 0.5) * 0.5; // small change
+const old = tickers[sym];
+const price = Math.max(0.01, +(old + change).toFixed(2));
+tickers[sym] = price;
+updates.push({ symbol: sym, price, change: +(price - old).toFixed(2), timestamp: Date.now() });
+});
+broadcast({ type: 'tick', data: updates });
+}, 1000);
+
+
+// Accept WebSocket connections
+wss.on('connection', ws => {
+console.log('Client connected');
+// Send initial snapshot
+const snapshot = Object.keys(tickers).map(sym => ({ symbol: sym, price: tickers[sym], change: 0, timestamp: Date.now() }));
+ws.send(JSON.stringify({ type: 'snapshot', data: snapshot }));
+
+
+ws.on('message', message => {
+try {
+const m = JSON.parse(message);
+if (m.type === 'subscribe') {
+// future: handle subscriptions per-client
+}
+} catch (e) {
+console.warn('Invalid ws message', e);
+}
+});
+
+
+ws.on('close', () => console.log('Client disconnected'));
+});
+
+
+const PORT = process.env.PORT || 4000;
+server.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
+
+
+#frontend src app
+import React, { useEffect, useState, useRef } from 'react'
+import Ticker from './components/Ticker'
+import Chart from './components/Chart'
+
+
+export default function App() {
+const [ticks, setTicks] = useState([]) // array of {symbol, price, change, timestamp}
+const wsRef = useRef(null)
+
+
+useEffect(() => {
+const url = (location.hostname === 'localhost') ? 'ws://localhost:4000' : `wss://${location.host}`;
+const ws = new WebSocket('ws://localhost:4000');
+wsRef.current = ws
+
+
+ws.addEventListener('open', () => console.log('WS open'))
+ws.addEventListener('message', ev => {
+try {
+const msg = JSON.parse(ev.data)
+if (msg.type === 'snapshot') {
+setTicks(msg.data)
+} else if (msg.type === 'tick') {
+// merge updates
+setTicks(prev => {
+const map = new Map(prev.map(p => [p.symbol, p]))
+msg.data.forEach(u => {
+const prevItem = map.get(u.symbol) || { symbol: u.symbol, price: u.price, change: u.change, timestamp: u.timestamp }
+const item = { symbol: u.symbol, price: u.price, change: u.change, timestamp: u.timestamp }
+map.set(u.symbol, item)
+})
+return Array.from(map.values())
+})
+}
+} catch (e) { console.warn('invalid ws data', e) }
+})
+
+
+ws.addEventListener('close', () => console.log('WS closed'))
+return () => ws.close()
+}, [])
+
+
+return (
+<div className="container">
+<h1>Real-Time Stock Ticker</h1>
+<div className="layout">
+<div className="left">
+<Ticker ticks={ticks} />
+</div>
+<div className="right">
+<Chart ticks={ticks} />
+</div>
+</div>
+</div>
+)
+}
+
+#frontend src component
+import React, { useEffect, useRef } from 'react'
+import { Chart as ChartJS, LineController, LineElement, PointElement, LinearScale, Title, CategoryScale } from 'chart.js'
+
+
+ChartJS.register(LineController, LineElement, PointElement, LinearScale, Title, CategoryScale)
+
+
+export default function Chart({ ticks }) {
+const canvasRef = useRef(null)
+const chartRef = useRef(null)
+
+
+useEffect(() => {
+if (!canvasRef.current) return
+const ctx = canvasRef.current.getContext('2d')
+
+
+if (!chartRef.current) {
+chartRef.current = new ChartJS(ctx, {
+type: 'line',
+data: {
+labels: [],
+datasets: []
+},
+options: { responsive: true, plugins: { title: { display: true, text: 'Realtime Prices' } } }
+})
+}
+
+
+// Build dataset per symbol using latest single point (for demo we only draw current prices)
+const labels = ticks.map(t => new Date(t.timestamp).toLocaleTimeString())
+const datasets = ticks.map((t, idx) => ({ label: t.symbol, data: [t.price], tension: 0.3 }))
+
+
+// Update chart (simplified)
+chartRef.current.data.labels = labels.length ? [labels[labels.length - 1]] : []
+chartRef.current.data.datasets = datasets
+chartRef.current.update()
+}, [ticks])
+
+
+return (
+<div>
+<h2>Chart (live)</h2>
+<canvas ref={canvasRef} />
+</div>
+)
+}
+
+
+
